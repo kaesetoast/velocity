@@ -156,7 +156,7 @@ function getValue() {
     var _iteratorError = undefined;
 
     try {
-        for (var _iterator = arguments[Symbol.iterator](), _step; !(_iteratorNormalCompletion = (_step = _iterator.next()).done); _iteratorNormalCompletion = true) {
+        for (var _iterator = args[Symbol.iterator](), _step; !(_iteratorNormalCompletion = (_step = _iterator.next()).done); _iteratorNormalCompletion = true) {
             var arg = _step.value;
 
             if (arg !== undefined && arg === arg) {
@@ -1210,105 +1210,23 @@ function freeAnimationCall(animation) {
     }
 }
 
-var SequencesObject = {};
-
-// Project
 /**
- * Call the complete method of an animation in a separate function so it can
- * benefit from JIT compiling while still having a try/catch block.
+ * Cache every camelCase match to avoid repeating lookups.
  */
-function callComplete(activeCall) {
-    var callback = activeCall.complete || activeCall.options.complete;
-    if (callback) {
-        try {
-            var elements = activeCall.elements;
-            callback.call(elements, elements, activeCall);
-        } catch (error) {
-            setTimeout(function () {
-                throw error;
-            }, 1);
-        }
-    }
-}
+var cache$2 = {};
 /**
- * Complete an animation. This might involve restarting (for loop or repeat
- * options). Once it is finished we also check for any callbacks or Promises
- * that need updating.
+ * Camelcase a property name into its JavaScript notation (e.g.
+ * "background-color" ==> "backgroundColor"). Camelcasing is used to
+ * normalize property names between and across calls.
  */
-function completeCall(activeCall) {
-    // TODO: Check if it's not been completed already
-    var options = activeCall.options,
-        queue = getValue(activeCall.queue, options.queue),
-        isLoop = getValue(activeCall.loop, options.loop, defaults$1.loop),
-        isRepeat = getValue(activeCall.repeat, options.repeat, defaults$1.repeat),
-        isStopped = activeCall._flags & 8 /* STOPPED */; // tslint:disable-line:no-bitwise
-    if (!isStopped && (isLoop || isRepeat)) {
-        ////////////////////
-        // Option: Loop   //
-        // Option: Repeat //
-        ////////////////////
-        if (isRepeat && isRepeat !== true) {
-            activeCall.repeat = isRepeat - 1;
-        } else if (isLoop && isLoop !== true) {
-            activeCall.loop = isLoop - 1;
-            activeCall.repeat = getValue(activeCall.repeatAgain, options.repeatAgain, defaults$1.repeatAgain);
-        }
-        if (isLoop) {
-            activeCall._flags ^= 64 /* REVERSE */; // tslint:disable-line:no-bitwise
-        }
-        if (queue !== false) {
-            // Can't be called when stopped so no need for an extra check.
-            Data(activeCall.element).lastFinishList[queue] = activeCall.timeStart + getValue(activeCall.duration, options.duration, defaults$1.duration);
-        }
-        activeCall.timeStart = activeCall.ellapsedTime = activeCall.percentComplete = 0;
-        activeCall._flags &= ~4 /* STARTED */; // tslint:disable-line:no-bitwise
-    } else {
-        var element = activeCall.element,
-            data = Data(element);
-        if (! --data.count && !isStopped) {
-            ////////////////////////
-            // Feature: Classname //
-            ////////////////////////
-            removeClass(element, State.className);
-        }
-        //////////////////////
-        // Option: Complete //
-        //////////////////////
-        // If this is the last animation in this list then we can check for
-        // and complete calls or Promises.
-        // TODO: When deleting an element we need to adjust these values.
-        if (options && ++options._completed === options._total) {
-            if (!isStopped && options.complete) {
-                // We don't call the complete if the animation is stopped,
-                // and we clear the key to prevent it being called again.
-                callComplete(activeCall);
-                options.complete = null;
-            }
-            var resolver = options._resolver;
-            if (resolver) {
-                // Fulfil the Promise
-                resolver(activeCall.elements);
-                delete options._resolver;
-            }
-        }
-        ///////////////////
-        // Option: Queue //
-        ///////////////////
-        if (queue !== false) {
-            // We only do clever things with queues...
-            if (!isStopped) {
-                // If we're not stopping an animation, we need to remember
-                // what time it finished so that the next animation in
-                // sequence gets the correct start time.
-                data.lastFinishList[queue] = activeCall.timeStart + getValue(activeCall.duration, options.duration, defaults$1.duration);
-            }
-            // Start the next animation in sequence, or delete the queue if
-            // this was the last one.
-            dequeue(element, queue);
-        }
-        // Cleanup any pointers, and remember the last animation etc.
-        freeAnimationCall(activeCall);
-    }
+function camelCase(property) {
+  var fixed = cache$2[property];
+  if (fixed) {
+    return fixed;
+  }
+  return cache$2[property] = property.replace(/-([a-z])/g, function ($, letter) {
+    return letter.toUpperCase();
+  });
 }
 
 // Project
@@ -1427,75 +1345,7 @@ function getNormalization(element, propertyName) {
 registerAction(["registerNormalization", registerNormalization]);
 registerAction(["hasNormalization", hasNormalization]);
 
-// Project
-/**
- * The singular setPropertyValue, which routes the logic for all
- * normalizations.
- */
-function setPropertyValue(element, propertyName, propertyValue, fn) {
-    var noCache = NoCacheNormalizations.has(propertyName),
-        data = !noCache && Data(element);
-    if (noCache || data && data.cache[propertyName] !== propertyValue) {
-        // By setting it to undefined we force a true "get" later
-        if (!noCache) {
-            data.cache[propertyName] = propertyValue || undefined;
-        }
-        fn = fn || getNormalization(element, propertyName);
-        if (fn) {
-            fn(element, propertyValue);
-        }
-        if (Velocity$$1.debug >= 2) {
-            console.info("Set \"" + propertyName + "\": \"" + propertyValue + "\"", element);
-        }
-    }
-}
-
-/**
- * Remove nested `calc(0px + *)` or `calc(* + (0px + *))` correctly.
- */
-function removeNestedCalc(value) {
-    if (value.indexOf("calc(") >= 0) {
-        var tokens = value.split(/([\(\)])/);
-        var depth = 0;
-        for (var i = 0; i < tokens.length; i++) {
-            var token = tokens[i];
-            switch (token) {
-                case "(":
-                    depth++;
-                    break;
-                case ")":
-                    depth--;
-                    break;
-                default:
-                    if (depth && token[0] === "0") {
-                        tokens[i] = token.replace(/^0[a-z%]+ \+ /, "");
-                    }
-                    break;
-            }
-        }
-        return tokens.join("").replace(/(?:calc)?\(([0-9\.]+[a-z%]+)\)/g, "$1");
-    }
-    return value;
-}
-
-/**
- * Cache every camelCase match to avoid repeating lookups.
- */
-var cache$2 = {};
-/**
- * Camelcase a property name into its JavaScript notation (e.g.
- * "background-color" ==> "backgroundColor"). Camelcasing is used to
- * normalize property names between and across calls.
- */
-function camelCase(property) {
-  var fixed = cache$2[property];
-  if (fixed) {
-    return fixed;
-  }
-  return cache$2[property] = property.replace(/-([a-z])/g, function ($, letter) {
-    return letter.toUpperCase();
-  });
-}
+var SequencesObject = {};
 
 // Constants
 var rxColor6 = /#([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})/gi,
@@ -1576,6 +1426,29 @@ function augmentDimension(element, name, wantInner) {
         return wantInner ? -augment : augment;
     }
     return 0;
+}
+
+// Project
+/**
+ * The singular setPropertyValue, which routes the logic for all
+ * normalizations.
+ */
+function setPropertyValue(element, propertyName, propertyValue, fn) {
+    var noCache = NoCacheNormalizations.has(propertyName),
+        data = !noCache && Data(element);
+    if (noCache || data && data.cache[propertyName] !== propertyValue) {
+        // By setting it to undefined we force a true "get" later
+        if (!noCache) {
+            data.cache[propertyName] = propertyValue || undefined;
+        }
+        fn = fn || getNormalization(element, propertyName);
+        if (fn) {
+            fn(element, propertyValue);
+        }
+        if (Velocity$1.debug >= 2) {
+            console.info("Set \"" + propertyName + "\": \"" + propertyValue + "\"", element);
+        }
+    }
 }
 
 // Project
@@ -1674,7 +1547,7 @@ function getPropertyValue(element, propertyName, fn, skipCache) {
             }
         }
     }
-    if (Velocity$$1.debug >= 2) {
+    if (Velocity$1.debug >= 2) {
         console.info("Get \"" + propertyName + "\": \"" + propertyValue + "\"", element);
     }
     return propertyValue;
@@ -1716,13 +1589,13 @@ function expandProperties(animation, properties) {
                 fn = getNormalization(element, propertyName);
             var valueData = properties[property];
             if (!fn && propertyName !== "tween") {
-                if (Velocity$$1.debug) {
+                if (Velocity$1.debug) {
                     console.log("Skipping \"" + property + "\" due to a lack of browser support.");
                 }
                 continue;
             }
             if (valueData == null) {
-                if (Velocity$$1.debug) {
+                if (Velocity$1.debug) {
                     console.log("Skipping \"" + property + "\" due to no value supplied.");
                 }
                 continue;
@@ -1989,7 +1862,7 @@ function explodeTween(propertyName, tween, duration, starting) {
         }), endValue], propertyName);
     }
     if (sequence) {
-        if (Velocity$$1.debug) {
+        if (Velocity$1.debug) {
             console.log("Velocity: Sequence found:", sequence);
         }
         sequence[0].percent = 0;
@@ -2036,11 +1909,385 @@ function validateTweens(activeCall) {
                 console.warn("bad type", tween, propertyName, startValue);
             }
         }
-        if (Velocity$$1.debug) {
+        if (Velocity$1.debug) {
             console.log("tweensContainer \"" + propertyName + "\": " + JSON.stringify(tween), element);
         }
     }
     activeCall._flags |= 1 /* EXPANDED */; // tslint:disable-line:no-bitwise
+}
+
+// Project
+var rxPercents = /(\d*\.\d+|\d+\.?|from|to)/g;
+function expandSequence(animation, sequence) {
+    var tweens = animation.tweens = Object.create(null),
+        element = animation.element;
+    for (var propertyName in sequence.tweens) {
+        if (sequence.tweens.hasOwnProperty(propertyName)) {
+            var fn = getNormalization(element, propertyName);
+            if (!fn && propertyName !== "tween") {
+                if (Velocity$1.debug) {
+                    console.log("Skipping [" + propertyName + "] due to a lack of browser support.");
+                }
+                continue;
+            }
+            tweens[propertyName] = {
+                fn: fn,
+                sequence: sequence.tweens[propertyName]
+            };
+        }
+    }
+}
+/**
+ * Used to register a sequence. This should never be called by users
+ * directly, instead it should be called via an action:<br/>
+ * <code>Velocity("registerSequence", ""name", VelocitySequence);</code>
+ */
+function registerSequence(args) {
+    if (isPlainObject(args[0])) {
+        for (var name in args[0]) {
+            if (args[0].hasOwnProperty(name)) {
+                registerSequence([name, args[0][name]]);
+            }
+        }
+    } else if (isString(args[0])) {
+        var _name = args[0],
+            sequence = args[1];
+        if (!isString(_name)) {
+            console.warn("VelocityJS: Trying to set 'registerSequence' name to an invalid value:", _name);
+        } else if (!isPlainObject(sequence)) {
+            console.warn("VelocityJS: Trying to set 'registerSequence' sequence to an invalid value:", _name, sequence);
+        } else {
+            if (SequencesObject[_name]) {
+                console.warn("VelocityJS: Replacing named sequence:", _name);
+            }
+            var percents = {},
+                steps = new Array(100),
+                properties = [],
+                sequenceList = SequencesObject[_name] = {},
+                duration = validateDuration(sequence.duration);
+            sequenceList.tweens = {};
+            if (isNumber(duration)) {
+                sequenceList.duration = duration;
+            }
+            for (var part in sequence) {
+                if (sequence.hasOwnProperty(part)) {
+                    var keys = String(part).match(rxPercents);
+                    if (keys) {
+                        var _iteratorNormalCompletion = true;
+                        var _didIteratorError = false;
+                        var _iteratorError = undefined;
+
+                        try {
+                            for (var _iterator = keys[Symbol.iterator](), _step; !(_iteratorNormalCompletion = (_step = _iterator.next()).done); _iteratorNormalCompletion = true) {
+                                var key = _step.value;
+
+                                var percent = key === "from" ? 0 : key === "to" ? 100 : parseFloat(key);
+                                if (percent < 0 || percent > 100) {
+                                    console.warn("VelocityJS: Trying to use an invalid value as a percentage (0 <= n <= 100):", _name, percent);
+                                } else if (isNaN(percent)) {
+                                    console.warn("VelocityJS: Trying to use an invalid number as a percentage:", _name, part, key);
+                                } else {
+                                    if (!percents[String(percent)]) {
+                                        percents[String(percent)] = [];
+                                    }
+                                    percents[String(percent)].push(part);
+                                    for (var property in sequence[part]) {
+                                        if (!properties.includes(property)) {
+                                            properties.push(property);
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (err) {
+                            _didIteratorError = true;
+                            _iteratorError = err;
+                        } finally {
+                            try {
+                                if (!_iteratorNormalCompletion && _iterator.return) {
+                                    _iterator.return();
+                                }
+                            } finally {
+                                if (_didIteratorError) {
+                                    throw _iteratorError;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            var orderedPercents = Object.keys(percents).sort(function (a, b) {
+                var a1 = parseFloat(a),
+                    b1 = parseFloat(b);
+                return a1 > b1 ? 1 : a1 < b1 ? -1 : 0;
+            });
+            orderedPercents.forEach(function (key) {
+                steps.push.apply(percents[key]);
+            });
+            var _iteratorNormalCompletion2 = true;
+            var _didIteratorError2 = false;
+            var _iteratorError2 = undefined;
+
+            try {
+                for (var _iterator2 = properties[Symbol.iterator](), _step2; !(_iteratorNormalCompletion2 = (_step2 = _iterator2.next()).done); _iteratorNormalCompletion2 = true) {
+                    var _property = _step2.value;
+
+                    var parts = [],
+                        propertyName = camelCase(_property);
+                    var _iteratorNormalCompletion3 = true;
+                    var _didIteratorError3 = false;
+                    var _iteratorError3 = undefined;
+
+                    try {
+                        for (var _iterator3 = orderedPercents[Symbol.iterator](), _step3; !(_iteratorNormalCompletion3 = (_step3 = _iterator3.next()).done); _iteratorNormalCompletion3 = true) {
+                            var _key = _step3.value;
+                            var _iteratorNormalCompletion6 = true;
+                            var _didIteratorError6 = false;
+                            var _iteratorError6 = undefined;
+
+                            try {
+                                for (var _iterator6 = percents[_key][Symbol.iterator](), _step6; !(_iteratorNormalCompletion6 = (_step6 = _iterator6.next()).done); _iteratorNormalCompletion6 = true) {
+                                    var _value = _step6.value;
+
+                                    var stepProperties = sequence[_value];
+                                    if (stepProperties[propertyName]) {
+                                        parts.push(isString(stepProperties[propertyName]) ? stepProperties[propertyName] : stepProperties[propertyName][0]);
+                                    }
+                                }
+                            } catch (err) {
+                                _didIteratorError6 = true;
+                                _iteratorError6 = err;
+                            } finally {
+                                try {
+                                    if (!_iteratorNormalCompletion6 && _iterator6.return) {
+                                        _iterator6.return();
+                                    }
+                                } finally {
+                                    if (_didIteratorError6) {
+                                        throw _iteratorError6;
+                                    }
+                                }
+                            }
+                        }
+                    } catch (err) {
+                        _didIteratorError3 = true;
+                        _iteratorError3 = err;
+                    } finally {
+                        try {
+                            if (!_iteratorNormalCompletion3 && _iterator3.return) {
+                                _iterator3.return();
+                            }
+                        } finally {
+                            if (_didIteratorError3) {
+                                throw _iteratorError3;
+                            }
+                        }
+                    }
+
+                    if (parts.length) {
+                        var realSequence = findPattern(parts, propertyName);
+                        var index = 0;
+                        if (realSequence) {
+                            var _iteratorNormalCompletion4 = true;
+                            var _didIteratorError4 = false;
+                            var _iteratorError4 = undefined;
+
+                            try {
+                                for (var _iterator4 = orderedPercents[Symbol.iterator](), _step4; !(_iteratorNormalCompletion4 = (_step4 = _iterator4.next()).done); _iteratorNormalCompletion4 = true) {
+                                    var _key2 = _step4.value;
+                                    var _iteratorNormalCompletion5 = true;
+                                    var _didIteratorError5 = false;
+                                    var _iteratorError5 = undefined;
+
+                                    try {
+                                        for (var _iterator5 = percents[_key2][Symbol.iterator](), _step5; !(_iteratorNormalCompletion5 = (_step5 = _iterator5.next()).done); _iteratorNormalCompletion5 = true) {
+                                            var value = _step5.value;
+
+                                            var originalProperty = sequence[value][propertyName];
+                                            if (originalProperty) {
+                                                if (Array.isArray(originalProperty) && originalProperty.length > 1 && (isString(originalProperty[1]) || Array.isArray(originalProperty[1]))) {
+                                                    realSequence[index].easing = validateEasing(originalProperty[1], sequenceList.duration || DEFAULT_DURATION);
+                                                }
+                                                realSequence[index++].percent = parseFloat(_key2) / 100;
+                                            }
+                                        }
+                                    } catch (err) {
+                                        _didIteratorError5 = true;
+                                        _iteratorError5 = err;
+                                    } finally {
+                                        try {
+                                            if (!_iteratorNormalCompletion5 && _iterator5.return) {
+                                                _iterator5.return();
+                                            }
+                                        } finally {
+                                            if (_didIteratorError5) {
+                                                throw _iteratorError5;
+                                            }
+                                        }
+                                    }
+                                }
+                            } catch (err) {
+                                _didIteratorError4 = true;
+                                _iteratorError4 = err;
+                            } finally {
+                                try {
+                                    if (!_iteratorNormalCompletion4 && _iterator4.return) {
+                                        _iterator4.return();
+                                    }
+                                } finally {
+                                    if (_didIteratorError4) {
+                                        throw _iteratorError4;
+                                    }
+                                }
+                            }
+
+                            sequenceList.tweens[propertyName] = realSequence;
+                        }
+                    }
+                }
+            } catch (err) {
+                _didIteratorError2 = true;
+                _iteratorError2 = err;
+            } finally {
+                try {
+                    if (!_iteratorNormalCompletion2 && _iterator2.return) {
+                        _iterator2.return();
+                    }
+                } finally {
+                    if (_didIteratorError2) {
+                        throw _iteratorError2;
+                    }
+                }
+            }
+        }
+    }
+}
+registerAction(["registerSequence", registerSequence], true);
+
+// Project
+/**
+ * Call the complete method of an animation in a separate function so it can
+ * benefit from JIT compiling while still having a try/catch block.
+ */
+function callComplete(activeCall) {
+    var callback = activeCall.complete || activeCall.options.complete;
+    if (callback) {
+        try {
+            var elements = activeCall.elements;
+            callback.call(elements, elements, activeCall);
+        } catch (error) {
+            setTimeout(function () {
+                throw error;
+            }, 1);
+        }
+    }
+}
+/**
+ * Complete an animation. This might involve restarting (for loop or repeat
+ * options). Once it is finished we also check for any callbacks or Promises
+ * that need updating.
+ */
+function completeCall(activeCall) {
+    // TODO: Check if it's not been completed already
+    var options = activeCall.options,
+        queue = getValue(activeCall.queue, options.queue),
+        isLoop = getValue(activeCall.loop, options.loop, defaults$1.loop),
+        isRepeat = getValue(activeCall.repeat, options.repeat, defaults$1.repeat),
+        isStopped = activeCall._flags & 8 /* STOPPED */; // tslint:disable-line:no-bitwise
+    if (!isStopped && (isLoop || isRepeat)) {
+        ////////////////////
+        // Option: Loop   //
+        // Option: Repeat //
+        ////////////////////
+        if (isRepeat && isRepeat !== true) {
+            activeCall.repeat = isRepeat - 1;
+        } else if (isLoop && isLoop !== true) {
+            activeCall.loop = isLoop - 1;
+            activeCall.repeat = getValue(activeCall.repeatAgain, options.repeatAgain, defaults$1.repeatAgain);
+        }
+        if (isLoop) {
+            activeCall._flags ^= 64 /* REVERSE */; // tslint:disable-line:no-bitwise
+        }
+        if (queue !== false) {
+            // Can't be called when stopped so no need for an extra check.
+            Data(activeCall.element).lastFinishList[queue] = activeCall.timeStart + getValue(activeCall.duration, options.duration, defaults$1.duration);
+        }
+        activeCall.timeStart = activeCall.ellapsedTime = activeCall.percentComplete = 0;
+        activeCall._flags &= ~4 /* STARTED */; // tslint:disable-line:no-bitwise
+    } else {
+        var element = activeCall.element,
+            data = Data(element);
+        if (! --data.count && !isStopped) {
+            ////////////////////////
+            // Feature: Classname //
+            ////////////////////////
+            removeClass(element, State.className);
+        }
+        //////////////////////
+        // Option: Complete //
+        //////////////////////
+        // If this is the last animation in this list then we can check for
+        // and complete calls or Promises.
+        // TODO: When deleting an element we need to adjust these values.
+        if (options && ++options._completed === options._total) {
+            if (!isStopped && options.complete) {
+                // We don't call the complete if the animation is stopped,
+                // and we clear the key to prevent it being called again.
+                callComplete(activeCall);
+                options.complete = null;
+            }
+            var resolver = options._resolver;
+            if (resolver) {
+                // Fulfil the Promise
+                resolver(activeCall.elements);
+                delete options._resolver;
+            }
+        }
+        ///////////////////
+        // Option: Queue //
+        ///////////////////
+        if (queue !== false) {
+            // We only do clever things with queues...
+            if (!isStopped) {
+                // If we're not stopping an animation, we need to remember
+                // what time it finished so that the next animation in
+                // sequence gets the correct start time.
+                data.lastFinishList[queue] = activeCall.timeStart + getValue(activeCall.duration, options.duration, defaults$1.duration);
+            }
+            // Start the next animation in sequence, or delete the queue if
+            // this was the last one.
+            dequeue(element, queue);
+        }
+        // Cleanup any pointers, and remember the last animation etc.
+        freeAnimationCall(activeCall);
+    }
+}
+
+/**
+ * Remove nested `calc(0px + *)` or `calc(* + (0px + *))` correctly.
+ */
+function removeNestedCalc(value) {
+    if (value.indexOf("calc(") >= 0) {
+        var tokens = value.split(/([\(\)])/);
+        var depth = 0;
+        for (var i = 0; i < tokens.length; i++) {
+            var token = tokens[i];
+            switch (token) {
+                case "(":
+                    depth++;
+                    break;
+                case ")":
+                    depth--;
+                    break;
+                default:
+                    if (depth && token[0] === "0") {
+                        tokens[i] = token.replace(/^0[a-z%]+ \+ /, "");
+                    }
+                    break;
+            }
+        }
+        return tokens.join("").replace(/(?:calc)?\(([0-9\.]+[a-z%]+)\)/g, "$1");
+    }
+    return value;
 }
 
 // Project
@@ -2389,7 +2636,7 @@ function tick(timestamp) {
                 var activeEasing = activeCall.easing != null ? activeCall.easing : _options.easing != null ? _options.easing : defaultEasing,
                     millisecondsEllapsed = activeCall.ellapsedTime = timeCurrent - _timeStart,
                     duration = activeCall.duration != null ? activeCall.duration : _options.duration != null ? _options.duration : defaultDuration,
-                    percentComplete = activeCall.percentComplete = Velocity$$1.mock ? 1 : Math.min(millisecondsEllapsed / duration, 1),
+                    percentComplete = activeCall.percentComplete = Velocity$1.mock ? 1 : Math.min(millisecondsEllapsed / duration, 1),
                     tweens = activeCall.tweens,
                     reverse = _flags & 64 /* REVERSE */; // tslint:disable-line:no-bitwise
                 if (activeCall.progress || _options._first === activeCall && _options.progress) {
@@ -2481,6 +2728,442 @@ function tick(timestamp) {
         }
     }
     ticking = false;
+}
+
+// Project
+var globalPromise = void 0;
+try {
+    globalPromise = Promise;
+} catch ( /**/_a) {/**/}
+var noPromiseOption = ", if that is deliberate then pass `promiseRejectEmpty:false` as an option";
+/**
+ * Patch a VelocityResult with a Promise.
+ */
+function patchPromise(promiseObject, result) {
+    defineProperty$1(result, "promise", promiseObject);
+    defineProperty$1(result, "then", promiseObject.then.bind(promiseObject));
+    defineProperty$1(result, "catch", promiseObject.catch.bind(promiseObject));
+    if (promiseObject.finally) {
+        // Semi-standard
+        defineProperty$1(result, "finally", promiseObject.finally.bind(promiseObject));
+    }
+}
+/* tslint:enable:max-line-length */
+function Velocity() {
+    for (var _len = arguments.length, argsList = Array(_len), _key = 0; _key < _len; _key++) {
+        argsList[_key] = arguments[_key];
+    }
+
+    var
+    /**
+     * A shortcut to the default options.
+     */
+    defaults$$1 = defaults$1,
+
+    /**
+     * Shortcut to arguments for file size.
+     */
+    args = arguments,
+
+    /**
+     * Cache of the first argument - this is used often enough to be saved.
+     */
+    args0 = args[0],
+
+    /**
+     * To allow for expressive CoffeeScript code, Velocity supports an
+     * alternative syntax in which "elements" (or "e"), "properties" (or
+     * "p"), and "options" (or "o") objects are defined on a container
+     * object that's passed in as Velocity's sole argument.
+     *
+     * Note: Some browsers automatically populate arguments with a
+     * "properties" object. We detect it by checking for its default
+     * "names" property.
+     */
+    // TODO: Confirm which browsers - if <=IE8 the we can drop completely
+    syntacticSugar = isPlainObject(args0) && (args0.p || isPlainObject(args0.properties) && !args0.properties.names || isString(args0.properties));
+    var
+    /**
+     *  When Velocity is called via the utility function (Velocity()),
+     * elements are explicitly passed in as the first parameter. Thus,
+     * argument positioning varies.
+     */
+    argumentIndex = 0,
+
+    /**
+     * The list of elements, extended with Promise and Velocity.
+     */
+    elements = void 0,
+
+    /**
+     * The properties being animated. This can be a string, in which case it
+     * is either a function for these elements, or it is a "named" animation
+     * sequence to use instead. Named sequences start with either "callout."
+     * or "transition.". When used as a callout the values will be reset
+     * after finishing. When used as a transtition then there is no special
+     * handling after finishing.
+     */
+    propertiesMap = void 0,
+
+    /**
+     * Options supplied, this will be mapped and validated into
+     * <code>options</code>.
+     */
+    optionsMap = void 0,
+
+    /**
+     * If called via a chain then this contains the <b>last</b> calls
+     * animations. If this does not have a value then any access to the
+     * element's animations needs to be to the currently-running ones.
+     */
+    animations = void 0,
+
+    /**
+     * The promise that is returned.
+     */
+    promise = void 0,
+
+    // Used when the animation is finished
+    resolver = void 0,
+
+    // Used when there was an issue with one or more of the Velocity arguments
+    rejecter = void 0;
+    //console.log(`Velocity`, _arguments)
+    // First get the elements, and the animations connected to the last call if
+    // this is chained.
+    // TODO: Clean this up a bit
+    // TODO: Throw error if the chain is called with elements as the first argument. isVelocityResult(this) && ( (isNode(arg0) || isWrapped(arg0)) && arg0 == this)
+    if (isNode(this)) {
+        // This is from a chain such as document.getElementById("").velocity(...)
+        elements = [this];
+    } else if (isWrapped(this)) {
+        // This might be a chain from something else, but if chained from a
+        // previous Velocity() call then grab the animations it's related to.
+        elements = cloneArray(this);
+        if (isVelocityResult(this)) {
+            animations = this.velocity.animations;
+        }
+    } else if (syntacticSugar) {
+        elements = cloneArray(args0.elements || args0.e);
+        argumentIndex++;
+    } else if (isNode(args0)) {
+        elements = cloneArray([args0]);
+        argumentIndex++;
+    } else if (isWrapped(args0)) {
+        elements = cloneArray(args0);
+        argumentIndex++;
+    }
+    // Allow elements to be chained.
+    if (elements) {
+        defineProperty$1(elements, "velocity", Velocity.bind(elements));
+        if (animations) {
+            defineProperty$1(elements.velocity, "animations", animations);
+        }
+    }
+    // Next get the propertiesMap and options.
+    if (syntacticSugar) {
+        propertiesMap = getValue(args0.properties, args0.p);
+    } else {
+        // TODO: Should be possible to call Velocity("pauseAll") - currently not possible
+        propertiesMap = args[argumentIndex++];
+    }
+    // Get any options map passed in as arguments first, expand any direct
+    // options if possible.
+    var isReverse = propertiesMap === "reverse",
+        isAction = !isReverse && isString(propertiesMap),
+        maybeSequence = isAction && SequencesObject[propertiesMap],
+        opts = syntacticSugar ? getValue(args0.options, args0.o) : args[argumentIndex];
+    if (isPlainObject(opts)) {
+        optionsMap = opts;
+    }
+    // Create the promise if supported and wanted.
+    if (globalPromise && getValue(optionsMap && optionsMap.promise, defaults$$1.promise)) {
+        promise = new globalPromise(function (resolve, reject) {
+            rejecter = reject;
+            // IMPORTANT:
+            // If a resolver tries to run on a Promise then it will wait until
+            // that Promise resolves - but in this case we're running on our own
+            // Promise, so need to make sure it's not seen as one. Removing
+            // these values for the duration of the resolve.
+            // Due to being an async call, they should be back to "normal"
+            // before the <code>.then()</code> function gets called.
+            resolver = function resolver(result) {
+                if (isVelocityResult(result) && result.promise) {
+                    delete result.then;
+                    delete result.catch;
+                    delete result.finally;
+                    resolve(result);
+                    patchPromise(result.promise, result);
+                } else {
+                    resolve(result);
+                }
+            };
+        });
+        if (elements) {
+            patchPromise(promise, elements);
+        }
+    }
+    if (promise) {
+        var optionPromiseRejectEmpty = optionsMap && optionsMap.promiseRejectEmpty,
+            promiseRejectEmpty = getValue(optionPromiseRejectEmpty, defaults$$1.promiseRejectEmpty);
+        if (!elements && !isAction) {
+            if (promiseRejectEmpty) {
+                rejecter("Velocity: No elements supplied" + (isBoolean(optionPromiseRejectEmpty) ? "" : noPromiseOption) + ". Aborting.");
+            } else {
+                resolver();
+            }
+        } else if (!propertiesMap) {
+            if (promiseRejectEmpty) {
+                rejecter("Velocity: No properties supplied" + (isBoolean(optionPromiseRejectEmpty) ? "" : noPromiseOption) + ". Aborting.");
+            } else {
+                resolver();
+            }
+        }
+    }
+    if (!elements && !isAction || !propertiesMap) {
+        return promise;
+    }
+    // NOTE: Can't use isAction here due to type inference - there are callbacks
+    // between so the type isn't considered safe.
+    if (isAction) {
+        var actionArgs = [],
+            promiseHandler = promise && {
+            _promise: promise,
+            _resolver: resolver,
+            _rejecter: rejecter
+        };
+        while (argumentIndex < args.length) {
+            actionArgs.push(args[argumentIndex++]);
+        }
+        // Velocity's behavior is categorized into "actions". If a string is
+        // passed in instead of a propertiesMap then that will call a function
+        // to do something special to the animation linked.
+        // There is one special case - "reverse" - which is handled differently,
+        // by being stored on the animation and then expanded when the animation
+        // starts.
+        var action = propertiesMap.replace(/\..*$/, ""),
+            callback = Actions[action];
+        if (callback) {
+            var result = callback(actionArgs, elements, promiseHandler, propertiesMap);
+            if (result !== undefined) {
+                return result;
+            }
+            return elements || promise;
+        } else if (!maybeSequence) {
+            console.error("VelocityJS: First argument (" + propertiesMap + ") was not a property map, a known action, or a registered redirect. Aborting.");
+            return;
+        }
+    }
+    var hasValidDuration = void 0;
+    if (isPlainObject(propertiesMap) || isReverse || maybeSequence) {
+        /**
+         * The options for this set of animations.
+         */
+        var options = {};
+        var isSync = defaults$$1.sync;
+        // Private options first - set as non-enumerable, and starting with an
+        // underscore so we can filter them out.
+        if (promise) {
+            defineProperty$1(options, "_promise", promise);
+            defineProperty$1(options, "_rejecter", rejecter);
+            defineProperty$1(options, "_resolver", resolver);
+        }
+        defineProperty$1(options, "_ready", 0);
+        defineProperty$1(options, "_started", 0);
+        defineProperty$1(options, "_completed", 0);
+        defineProperty$1(options, "_total", 0);
+        // Now check the optionsMap
+        if (isPlainObject(optionsMap)) {
+            var validDuration = validateDuration(optionsMap.duration);
+            hasValidDuration = validDuration !== undefined;
+            options.duration = getValue(validDuration, defaults$$1.duration);
+            options.delay = getValue(validateDelay(optionsMap.delay), defaults$$1.delay);
+            // Need the extra fallback here in case it supplies an invalid
+            // easing that we need to overrride with the default.
+            options.easing = validateEasing(getValue(optionsMap.easing, defaults$$1.easing), options.duration) || validateEasing(defaults$$1.easing, options.duration);
+            options.loop = getValue(validateLoop(optionsMap.loop), defaults$$1.loop);
+            options.repeat = options.repeatAgain = getValue(validateRepeat(optionsMap.repeat), defaults$$1.repeat);
+            if (optionsMap.speed != null) {
+                options.speed = getValue(validateSpeed(optionsMap.speed), 1);
+            }
+            if (isBoolean(optionsMap.promise)) {
+                options.promise = optionsMap.promise;
+            }
+            options.queue = getValue(validateQueue(optionsMap.queue), defaults$$1.queue);
+            if (optionsMap.mobileHA && !State.isGingerbread) {
+                /* When set to true, and if this is a mobile device, mobileHA automatically enables hardware acceleration (via a null transform hack)
+                 on animating elements. HA is removed from the element at the completion of its animation. */
+                /* Note: Android Gingerbread doesn't support HA. If a null transform hack (mobileHA) is in fact set, it will prevent other tranform subproperties from taking effect. */
+                /* Note: You can read more about the use of mobileHA in Velocity's documentation: velocity-animate/#mobileHA. */
+                options.mobileHA = true;
+            }
+            if (optionsMap.drag === true) {
+                options.drag = true;
+            }
+            if (isNumber(optionsMap.stagger) || isFunction(optionsMap.stagger)) {
+                options.stagger = optionsMap.stagger;
+            }
+            if (!isReverse) {
+                if (optionsMap["display"] != null) {
+                    propertiesMap.display = optionsMap["display"];
+                    console.error("Deprecated \"options.display\" used, this is now a property:", optionsMap["display"]);
+                }
+                if (optionsMap["visibility"] != null) {
+                    propertiesMap.visibility = optionsMap["visibility"];
+                    console.error("Deprecated \"options.visibility\" used, this is now a property:", optionsMap["visibility"]);
+                }
+            }
+            // TODO: Allow functional options for different options per element
+            var optionsBegin = validateBegin(optionsMap.begin),
+                optionsComplete = validateComplete(optionsMap.complete),
+                optionsProgress = validateProgress(optionsMap.progress),
+                optionsSync = validateSync(optionsMap.sync);
+            if (optionsBegin != null) {
+                options.begin = optionsBegin;
+            }
+            if (optionsComplete != null) {
+                options.complete = optionsComplete;
+            }
+            if (optionsProgress != null) {
+                options.progress = optionsProgress;
+            }
+            if (optionsSync != null) {
+                isSync = optionsSync;
+            }
+        } else if (!syntacticSugar) {
+            // Expand any direct options if possible.
+            var offset = 0;
+            options.duration = validateDuration(args[argumentIndex], true);
+            if (options.duration === undefined) {
+                options.duration = defaults$$1.duration;
+            } else {
+                hasValidDuration = true;
+                offset++;
+            }
+            if (!isFunction(args[argumentIndex + offset])) {
+                // Despite coming before Complete, we can't pass a fn easing
+                var easing = validateEasing(args[argumentIndex + offset], getValue(options && validateDuration(options.duration), defaults$$1.duration), true);
+                if (easing !== undefined) {
+                    offset++;
+                    options.easing = easing;
+                }
+            }
+            var complete = validateComplete(args[argumentIndex + offset], true);
+            if (complete !== undefined) {
+                options.complete = complete;
+            }
+            options.delay = defaults$$1.delay;
+            options.loop = defaults$$1.loop;
+            options.repeat = options.repeatAgain = defaults$$1.repeat;
+        }
+        if (isReverse && options.queue === false) {
+            throw new Error("VelocityJS: Cannot reverse a queue:false animation.");
+        }
+        if (!hasValidDuration && maybeSequence && maybeSequence.duration) {
+            options.duration = maybeSequence.duration;
+        }
+        // When a set of elements is targeted by a Velocity call, the set is
+        // broken up and each element has the current Velocity call individually
+        // queued onto it. In this way, each element's existing queue is
+        // respected; some elements may already be animating and accordingly
+        // should not have this current Velocity call triggered immediately
+        // unless the sync:true option is used.
+        var rootAnimation = {
+            options: options,
+            elements: elements,
+            _prev: undefined,
+            _next: undefined,
+            _flags: isSync ? 32 /* SYNC */ : 0,
+            percentComplete: 0,
+            ellapsedTime: 0,
+            timeStart: 0
+        };
+        animations = [];
+        for (var index = 0; index < elements.length; index++) {
+            var element = elements[index];
+            var flags = 0;
+            if (isNode(element)) {
+                // TODO: This needs to check for valid animation targets, not just Elements
+                if (isReverse) {
+                    var lastAnimation = Data(element).lastAnimationList[options.queue];
+                    propertiesMap = lastAnimation && lastAnimation.tweens;
+                    if (!propertiesMap) {
+                        console.error("VelocityJS: Attempting to reverse an animation on an element with no previous animation:", element);
+                        continue;
+                    }
+                    flags |= 64 /* REVERSE */ & ~(lastAnimation._flags & 64 /* REVERSE */); // tslint:disable-line:no-bitwise
+                }
+                var animation = Object.assign({}, rootAnimation, { element: element, _flags: rootAnimation._flags | flags });
+                options._total++;
+                animations.push(animation);
+                if (options.stagger) {
+                    if (isFunction(options.stagger)) {
+                        var num = optionCallback(options.stagger, element, index, elements.length, elements, "stagger");
+                        if (isNumber(num)) {
+                            animation.delay = options.delay + num;
+                        }
+                    } else {
+                        animation.delay = options.delay + options.stagger * index;
+                    }
+                }
+                if (options.drag) {
+                    animation.duration = options.duration - options.duration * Math.max(1 - (index + 1) / elements.length, 0.75);
+                }
+                if (maybeSequence) {
+                    expandSequence(animation, maybeSequence);
+                } else if (isReverse) {
+                    // In this case we're using the previous animation, so
+                    // it will be expanded correctly when that one runs.
+                    animation.tweens = propertiesMap;
+                } else {
+                    animation.tweens = Object.create(null);
+                    expandProperties(animation, propertiesMap);
+                }
+                queue$1(element, animation, options.queue);
+            }
+        }
+        if (State.isTicking === false) {
+            // If the animation tick isn't running, start it. (Velocity shuts it
+            // off when there are no active calls to process.)
+            tick(false);
+        }
+        if (animations) {
+            defineProperty$1(elements.velocity, "animations", animations);
+        }
+    }
+    /***************
+     Chaining
+     ***************/
+    /* Return the elements back to the call chain, with wrapped elements taking precedence in case Velocity was called via the $.fn. extension. */
+    return elements || promise;
+}
+/**
+ * Call an option callback in a try/catch block and report an error if needed.
+ */
+function optionCallback(fn, element, index, length, elements, option) {
+    try {
+        return fn.call(element, index, length, elements, option);
+    } catch (e) {
+        console.error("VelocityJS: Exception when calling '" + option + "' callback:", e);
+    }
+}
+
+// Project
+/**
+ * Used to patch any object to allow Velocity chaining. In order to chain an
+ * object must either be treatable as an array - with a <code>.length</code>
+ * property, and each member a Node, or a Node directly.
+ *
+ * By default Velocity will try to patch <code>window</code>,
+ * <code>jQuery</code>, <code>Zepto</code>, and several classes that return
+ * Nodes or lists of Nodes.
+ */
+function patch(proto, global) {
+    try {
+        defineProperty$1(proto, (global ? "V" : "v") + "elocity", Velocity);
+    } catch (e) {
+        console.warn("VelocityJS: Error when trying to add prototype.", e);
+    }
 }
 
 // Project
@@ -3888,7 +4571,7 @@ registerNormalization(["Element", "tween", getSetTween]);
 var VERSION = "2.0.5";
 
 // Project
-var Velocity$$1 = Velocity$1;
+var Velocity$1 = Velocity;
 /**
  * These parts of Velocity absolutely must be included, even if they're unused!
  */
@@ -3946,7 +4629,7 @@ var VelocityStatic;
     /**
      * Added as a fallback for "import {Velocity} from 'velocity-animate';".
      */
-    VelocityStatic.Velocity = Velocity$1; // tslint:disable-line:no-shadowed-variable
+    VelocityStatic.Velocity = Velocity; // tslint:disable-line:no-shadowed-variable
 })(VelocityStatic || (VelocityStatic = {}));
 /* IE detection. Gist: https://gist.github.com/julianshapiro/9098609 */
 var IE = function () {
@@ -4002,7 +4685,7 @@ var _loop = function _loop(property) {
         switch (typeof property === "undefined" ? "undefined" : _typeof(property)) {
             case "number":
             case "boolean":
-                defineProperty$1(Velocity$$1, property, {
+                defineProperty$1(Velocity$1, property, {
                     get: function get$$1() {
                         return VelocityStatic[property];
                     },
@@ -4012,7 +4695,7 @@ var _loop = function _loop(property) {
                 }, true);
                 break;
             default:
-                defineProperty$1(Velocity$$1, property, VelocityStatic[property], true);
+                defineProperty$1(Velocity$1, property, VelocityStatic[property], true);
                 break;
         }
     }
@@ -4021,826 +4704,7 @@ var _loop = function _loop(property) {
 for (var property in VelocityStatic) {
     _loop(property);
 }
-Object.freeze(Velocity$$1);
+Object.freeze(Velocity$1);
 
-// Project
-var rxPercents = /(\d*\.\d+|\d+\.?|from|to)/g;
-function expandSequence(animation, sequence) {
-    var tweens = animation.tweens = Object.create(null),
-        element = animation.element;
-    for (var propertyName in sequence.tweens) {
-        if (sequence.tweens.hasOwnProperty(propertyName)) {
-            var fn = getNormalization(element, propertyName);
-            if (!fn && propertyName !== "tween") {
-                if (Velocity$$1.debug) {
-                    console.log("Skipping [" + propertyName + "] due to a lack of browser support.");
-                }
-                continue;
-            }
-            tweens[propertyName] = {
-                fn: fn,
-                sequence: sequence.tweens[propertyName]
-            };
-        }
-    }
-}
-/**
- * Used to register a sequence. This should never be called by users
- * directly, instead it should be called via an action:<br/>
- * <code>Velocity("registerSequence", ""name", VelocitySequence);</code>
- */
-function registerSequence(args) {
-    if (isPlainObject(args[0])) {
-        for (var name in args[0]) {
-            if (args[0].hasOwnProperty(name)) {
-                registerSequence([name, args[0][name]]);
-            }
-        }
-    } else if (isString(args[0])) {
-        var _name = args[0],
-            sequence = args[1];
-        if (!isString(_name)) {
-            console.warn("VelocityJS: Trying to set 'registerSequence' name to an invalid value:", _name);
-        } else if (!isPlainObject(sequence)) {
-            console.warn("VelocityJS: Trying to set 'registerSequence' sequence to an invalid value:", _name, sequence);
-        } else {
-            if (SequencesObject[_name]) {
-                console.warn("VelocityJS: Replacing named sequence:", _name);
-            }
-            var percents = {},
-                steps = new Array(100),
-                properties = [],
-                sequenceList = SequencesObject[_name] = {},
-                duration = validateDuration(sequence.duration);
-            sequenceList.tweens = {};
-            if (isNumber(duration)) {
-                sequenceList.duration = duration;
-            }
-            for (var part in sequence) {
-                if (sequence.hasOwnProperty(part)) {
-                    var keys = String(part).match(rxPercents);
-                    if (keys) {
-                        var _iteratorNormalCompletion = true;
-                        var _didIteratorError = false;
-                        var _iteratorError = undefined;
-
-                        try {
-                            for (var _iterator = keys[Symbol.iterator](), _step; !(_iteratorNormalCompletion = (_step = _iterator.next()).done); _iteratorNormalCompletion = true) {
-                                var key = _step.value;
-
-                                var percent = key === "from" ? 0 : key === "to" ? 100 : parseFloat(key);
-                                if (percent < 0 || percent > 100) {
-                                    console.warn("VelocityJS: Trying to use an invalid value as a percentage (0 <= n <= 100):", _name, percent);
-                                } else if (isNaN(percent)) {
-                                    console.warn("VelocityJS: Trying to use an invalid number as a percentage:", _name, part, key);
-                                } else {
-                                    if (!percents[String(percent)]) {
-                                        percents[String(percent)] = [];
-                                    }
-                                    percents[String(percent)].push(part);
-                                    for (var property in sequence[part]) {
-                                        if (!properties.includes(property)) {
-                                            properties.push(property);
-                                        }
-                                    }
-                                }
-                            }
-                        } catch (err) {
-                            _didIteratorError = true;
-                            _iteratorError = err;
-                        } finally {
-                            try {
-                                if (!_iteratorNormalCompletion && _iterator.return) {
-                                    _iterator.return();
-                                }
-                            } finally {
-                                if (_didIteratorError) {
-                                    throw _iteratorError;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            var orderedPercents = Object.keys(percents).sort(function (a, b) {
-                var a1 = parseFloat(a),
-                    b1 = parseFloat(b);
-                return a1 > b1 ? 1 : a1 < b1 ? -1 : 0;
-            });
-            orderedPercents.forEach(function (key) {
-                steps.push.apply(percents[key]);
-            });
-            var _iteratorNormalCompletion2 = true;
-            var _didIteratorError2 = false;
-            var _iteratorError2 = undefined;
-
-            try {
-                for (var _iterator2 = properties[Symbol.iterator](), _step2; !(_iteratorNormalCompletion2 = (_step2 = _iterator2.next()).done); _iteratorNormalCompletion2 = true) {
-                    var _property = _step2.value;
-
-                    var parts = [],
-                        propertyName = camelCase(_property);
-                    var _iteratorNormalCompletion3 = true;
-                    var _didIteratorError3 = false;
-                    var _iteratorError3 = undefined;
-
-                    try {
-                        for (var _iterator3 = orderedPercents[Symbol.iterator](), _step3; !(_iteratorNormalCompletion3 = (_step3 = _iterator3.next()).done); _iteratorNormalCompletion3 = true) {
-                            var _key = _step3.value;
-                            var _iteratorNormalCompletion6 = true;
-                            var _didIteratorError6 = false;
-                            var _iteratorError6 = undefined;
-
-                            try {
-                                for (var _iterator6 = percents[_key][Symbol.iterator](), _step6; !(_iteratorNormalCompletion6 = (_step6 = _iterator6.next()).done); _iteratorNormalCompletion6 = true) {
-                                    var _value = _step6.value;
-
-                                    var stepProperties = sequence[_value];
-                                    if (stepProperties[propertyName]) {
-                                        parts.push(isString(stepProperties[propertyName]) ? stepProperties[propertyName] : stepProperties[propertyName][0]);
-                                    }
-                                }
-                            } catch (err) {
-                                _didIteratorError6 = true;
-                                _iteratorError6 = err;
-                            } finally {
-                                try {
-                                    if (!_iteratorNormalCompletion6 && _iterator6.return) {
-                                        _iterator6.return();
-                                    }
-                                } finally {
-                                    if (_didIteratorError6) {
-                                        throw _iteratorError6;
-                                    }
-                                }
-                            }
-                        }
-                    } catch (err) {
-                        _didIteratorError3 = true;
-                        _iteratorError3 = err;
-                    } finally {
-                        try {
-                            if (!_iteratorNormalCompletion3 && _iterator3.return) {
-                                _iterator3.return();
-                            }
-                        } finally {
-                            if (_didIteratorError3) {
-                                throw _iteratorError3;
-                            }
-                        }
-                    }
-
-                    if (parts.length) {
-                        var realSequence = findPattern(parts, propertyName);
-                        var index = 0;
-                        if (realSequence) {
-                            var _iteratorNormalCompletion4 = true;
-                            var _didIteratorError4 = false;
-                            var _iteratorError4 = undefined;
-
-                            try {
-                                for (var _iterator4 = orderedPercents[Symbol.iterator](), _step4; !(_iteratorNormalCompletion4 = (_step4 = _iterator4.next()).done); _iteratorNormalCompletion4 = true) {
-                                    var _key2 = _step4.value;
-                                    var _iteratorNormalCompletion5 = true;
-                                    var _didIteratorError5 = false;
-                                    var _iteratorError5 = undefined;
-
-                                    try {
-                                        for (var _iterator5 = percents[_key2][Symbol.iterator](), _step5; !(_iteratorNormalCompletion5 = (_step5 = _iterator5.next()).done); _iteratorNormalCompletion5 = true) {
-                                            var value = _step5.value;
-
-                                            var originalProperty = sequence[value][propertyName];
-                                            if (originalProperty) {
-                                                if (Array.isArray(originalProperty) && originalProperty.length > 1 && (isString(originalProperty[1]) || Array.isArray(originalProperty[1]))) {
-                                                    realSequence[index].easing = validateEasing(originalProperty[1], sequenceList.duration || DEFAULT_DURATION);
-                                                }
-                                                realSequence[index++].percent = parseFloat(_key2) / 100;
-                                            }
-                                        }
-                                    } catch (err) {
-                                        _didIteratorError5 = true;
-                                        _iteratorError5 = err;
-                                    } finally {
-                                        try {
-                                            if (!_iteratorNormalCompletion5 && _iterator5.return) {
-                                                _iterator5.return();
-                                            }
-                                        } finally {
-                                            if (_didIteratorError5) {
-                                                throw _iteratorError5;
-                                            }
-                                        }
-                                    }
-                                }
-                            } catch (err) {
-                                _didIteratorError4 = true;
-                                _iteratorError4 = err;
-                            } finally {
-                                try {
-                                    if (!_iteratorNormalCompletion4 && _iterator4.return) {
-                                        _iterator4.return();
-                                    }
-                                } finally {
-                                    if (_didIteratorError4) {
-                                        throw _iteratorError4;
-                                    }
-                                }
-                            }
-
-                            sequenceList.tweens[propertyName] = realSequence;
-                        }
-                    }
-                }
-            } catch (err) {
-                _didIteratorError2 = true;
-                _iteratorError2 = err;
-            } finally {
-                try {
-                    if (!_iteratorNormalCompletion2 && _iterator2.return) {
-                        _iterator2.return();
-                    }
-                } finally {
-                    if (_didIteratorError2) {
-                        throw _iteratorError2;
-                    }
-                }
-            }
-        }
-    }
-}
-registerAction(["registerSequence", registerSequence], true);
-
-// Project
-var globalPromise = void 0;
-try {
-    globalPromise = Promise;
-} catch ( /**/_a) {/**/}
-var noPromiseOption = ", if that is deliberate then pass `promiseRejectEmpty:false` as an option";
-/**
- * Patch a VelocityResult with a Promise.
- */
-function patchPromise(promiseObject, result) {
-    defineProperty$1(result, "promise", promiseObject);
-    defineProperty$1(result, "then", promiseObject.then.bind(promiseObject));
-    defineProperty$1(result, "catch", promiseObject.catch.bind(promiseObject));
-    if (promiseObject.finally) {
-        // Semi-standard
-        defineProperty$1(result, "finally", promiseObject.finally.bind(promiseObject));
-    }
-}
-/* tslint:enable:max-line-length */
-function Velocity$1() {
-    for (var _len = arguments.length, argsList = Array(_len), _key = 0; _key < _len; _key++) {
-        argsList[_key] = arguments[_key];
-    }
-
-    var
-    /**
-     * A shortcut to the default options.
-     */
-    defaults$$1 = defaults$1,
-
-    /**
-     * Shortcut to arguments for file size.
-     */
-    args = arguments,
-
-    /**
-     * Cache of the first argument - this is used often enough to be saved.
-     */
-    args0 = args[0],
-
-    /**
-     * To allow for expressive CoffeeScript code, Velocity supports an
-     * alternative syntax in which "elements" (or "e"), "properties" (or
-     * "p"), and "options" (or "o") objects are defined on a container
-     * object that's passed in as Velocity's sole argument.
-     *
-     * Note: Some browsers automatically populate arguments with a
-     * "properties" object. We detect it by checking for its default
-     * "names" property.
-     */
-    // TODO: Confirm which browsers - if <=IE8 the we can drop completely
-    syntacticSugar = isPlainObject(args0) && (args0.p || isPlainObject(args0.properties) && !args0.properties.names || isString(args0.properties));
-    var
-    /**
-     *  When Velocity is called via the utility function (Velocity()),
-     * elements are explicitly passed in as the first parameter. Thus,
-     * argument positioning varies.
-     */
-    argumentIndex = 0,
-
-    /**
-     * The list of elements, extended with Promise and Velocity.
-     */
-    elements = void 0,
-
-    /**
-     * The properties being animated. This can be a string, in which case it
-     * is either a function for these elements, or it is a "named" animation
-     * sequence to use instead. Named sequences start with either "callout."
-     * or "transition.". When used as a callout the values will be reset
-     * after finishing. When used as a transtition then there is no special
-     * handling after finishing.
-     */
-    propertiesMap = void 0,
-
-    /**
-     * Options supplied, this will be mapped and validated into
-     * <code>options</code>.
-     */
-    optionsMap = void 0,
-
-    /**
-     * If called via a chain then this contains the <b>last</b> calls
-     * animations. If this does not have a value then any access to the
-     * element's animations needs to be to the currently-running ones.
-     */
-    animations = void 0,
-
-    /**
-     * The promise that is returned.
-     */
-    promise = void 0,
-
-    // Used when the animation is finished
-    resolver = void 0,
-
-    // Used when there was an issue with one or more of the Velocity arguments
-    rejecter = void 0;
-    //console.log(`Velocity`, _arguments)
-    // First get the elements, and the animations connected to the last call if
-    // this is chained.
-    // TODO: Clean this up a bit
-    // TODO: Throw error if the chain is called with elements as the first argument. isVelocityResult(this) && ( (isNode(arg0) || isWrapped(arg0)) && arg0 == this)
-    if (isNode(this)) {
-        // This is from a chain such as document.getElementById("").velocity(...)
-        elements = [this];
-    } else if (isWrapped(this)) {
-        // This might be a chain from something else, but if chained from a
-        // previous Velocity() call then grab the animations it's related to.
-        elements = cloneArray(this);
-        if (isVelocityResult(this)) {
-            animations = this.velocity.animations;
-        }
-    } else if (syntacticSugar) {
-        elements = cloneArray(args0.elements || args0.e);
-        argumentIndex++;
-    } else if (isNode(args0)) {
-        elements = cloneArray([args0]);
-        argumentIndex++;
-    } else if (isWrapped(args0)) {
-        elements = cloneArray(args0);
-        argumentIndex++;
-    }
-    // Allow elements to be chained.
-    if (elements) {
-        defineProperty$1(elements, "velocity", Velocity$1.bind(elements));
-        if (animations) {
-            defineProperty$1(elements.velocity, "animations", animations);
-        }
-    }
-    // Next get the propertiesMap and options.
-    if (syntacticSugar) {
-        propertiesMap = getValue(args0.properties, args0.p);
-    } else {
-        // TODO: Should be possible to call Velocity("pauseAll") - currently not possible
-        propertiesMap = args[argumentIndex++];
-    }
-    // Get any options map passed in as arguments first, expand any direct
-    // options if possible.
-    var isReverse = propertiesMap === "reverse",
-        isAction = !isReverse && isString(propertiesMap),
-        maybeSequence = isAction && SequencesObject[propertiesMap],
-        opts = syntacticSugar ? getValue(args0.options, args0.o) : args[argumentIndex];
-    if (isPlainObject(opts)) {
-        optionsMap = opts;
-    }
-    // Create the promise if supported and wanted.
-    if (globalPromise && getValue(optionsMap && optionsMap.promise, defaults$$1.promise)) {
-        promise = new globalPromise(function (resolve, reject) {
-            rejecter = reject;
-            // IMPORTANT:
-            // If a resolver tries to run on a Promise then it will wait until
-            // that Promise resolves - but in this case we're running on our own
-            // Promise, so need to make sure it's not seen as one. Removing
-            // these values for the duration of the resolve.
-            // Due to being an async call, they should be back to "normal"
-            // before the <code>.then()</code> function gets called.
-            resolver = function resolver(result) {
-                if (isVelocityResult(result) && result.promise) {
-                    delete result.then;
-                    delete result.catch;
-                    delete result.finally;
-                    resolve(result);
-                    patchPromise(result.promise, result);
-                } else {
-                    resolve(result);
-                }
-            };
-        });
-        if (elements) {
-            patchPromise(promise, elements);
-        }
-    }
-    if (promise) {
-        var optionPromiseRejectEmpty = optionsMap && optionsMap.promiseRejectEmpty,
-            promiseRejectEmpty = getValue(optionPromiseRejectEmpty, defaults$$1.promiseRejectEmpty);
-        if (!elements && !isAction) {
-            if (promiseRejectEmpty) {
-                rejecter("Velocity: No elements supplied" + (isBoolean(optionPromiseRejectEmpty) ? "" : noPromiseOption) + ". Aborting.");
-            } else {
-                resolver();
-            }
-        } else if (!propertiesMap) {
-            if (promiseRejectEmpty) {
-                rejecter("Velocity: No properties supplied" + (isBoolean(optionPromiseRejectEmpty) ? "" : noPromiseOption) + ". Aborting.");
-            } else {
-                resolver();
-            }
-        }
-    }
-    if (!elements && !isAction || !propertiesMap) {
-        return promise;
-    }
-    // NOTE: Can't use isAction here due to type inference - there are callbacks
-    // between so the type isn't considered safe.
-    if (isAction) {
-        var actionArgs = [],
-            promiseHandler = promise && {
-            _promise: promise,
-            _resolver: resolver,
-            _rejecter: rejecter
-        };
-        while (argumentIndex < args.length) {
-            actionArgs.push(args[argumentIndex++]);
-        }
-        // Velocity's behavior is categorized into "actions". If a string is
-        // passed in instead of a propertiesMap then that will call a function
-        // to do something special to the animation linked.
-        // There is one special case - "reverse" - which is handled differently,
-        // by being stored on the animation and then expanded when the animation
-        // starts.
-        var action = propertiesMap.replace(/\..*$/, ""),
-            callback = Actions[action];
-        if (callback) {
-            var result = callback(actionArgs, elements, promiseHandler, propertiesMap);
-            if (result !== undefined) {
-                return result;
-            }
-            return elements || promise;
-        } else if (!maybeSequence) {
-            console.error("VelocityJS: First argument (" + propertiesMap + ") was not a property map, a known action, or a registered redirect. Aborting.");
-            return;
-        }
-    }
-    var hasValidDuration = void 0;
-    if (isPlainObject(propertiesMap) || isReverse || maybeSequence) {
-        /**
-         * The options for this set of animations.
-         */
-        var options = {};
-        var isSync = defaults$$1.sync;
-        // Private options first - set as non-enumerable, and starting with an
-        // underscore so we can filter them out.
-        if (promise) {
-            defineProperty$1(options, "_promise", promise);
-            defineProperty$1(options, "_rejecter", rejecter);
-            defineProperty$1(options, "_resolver", resolver);
-        }
-        defineProperty$1(options, "_ready", 0);
-        defineProperty$1(options, "_started", 0);
-        defineProperty$1(options, "_completed", 0);
-        defineProperty$1(options, "_total", 0);
-        // Now check the optionsMap
-        if (isPlainObject(optionsMap)) {
-            var validDuration = validateDuration(optionsMap.duration);
-            hasValidDuration = validDuration !== undefined;
-            options.duration = getValue(validDuration, defaults$$1.duration);
-            options.delay = getValue(validateDelay(optionsMap.delay), defaults$$1.delay);
-            // Need the extra fallback here in case it supplies an invalid
-            // easing that we need to overrride with the default.
-            options.easing = validateEasing(getValue(optionsMap.easing, defaults$$1.easing), options.duration) || validateEasing(defaults$$1.easing, options.duration);
-            options.loop = getValue(validateLoop(optionsMap.loop), defaults$$1.loop);
-            options.repeat = options.repeatAgain = getValue(validateRepeat(optionsMap.repeat), defaults$$1.repeat);
-            if (optionsMap.speed != null) {
-                options.speed = getValue(validateSpeed(optionsMap.speed), 1);
-            }
-            if (isBoolean(optionsMap.promise)) {
-                options.promise = optionsMap.promise;
-            }
-            options.queue = getValue(validateQueue(optionsMap.queue), defaults$$1.queue);
-            if (optionsMap.mobileHA && !State.isGingerbread) {
-                /* When set to true, and if this is a mobile device, mobileHA automatically enables hardware acceleration (via a null transform hack)
-                 on animating elements. HA is removed from the element at the completion of its animation. */
-                /* Note: Android Gingerbread doesn't support HA. If a null transform hack (mobileHA) is in fact set, it will prevent other tranform subproperties from taking effect. */
-                /* Note: You can read more about the use of mobileHA in Velocity's documentation: velocity-animate/#mobileHA. */
-                options.mobileHA = true;
-            }
-            if (optionsMap.drag === true) {
-                options.drag = true;
-            }
-            if (isNumber(optionsMap.stagger) || isFunction(optionsMap.stagger)) {
-                options.stagger = optionsMap.stagger;
-            }
-            if (!isReverse) {
-                if (optionsMap["display"] != null) {
-                    propertiesMap.display = optionsMap["display"];
-                    console.error("Deprecated \"options.display\" used, this is now a property:", optionsMap["display"]);
-                }
-                if (optionsMap["visibility"] != null) {
-                    propertiesMap.visibility = optionsMap["visibility"];
-                    console.error("Deprecated \"options.visibility\" used, this is now a property:", optionsMap["visibility"]);
-                }
-            }
-            // TODO: Allow functional options for different options per element
-            var optionsBegin = validateBegin(optionsMap.begin),
-                optionsComplete = validateComplete(optionsMap.complete),
-                optionsProgress = validateProgress(optionsMap.progress),
-                optionsSync = validateSync(optionsMap.sync);
-            if (optionsBegin != null) {
-                options.begin = optionsBegin;
-            }
-            if (optionsComplete != null) {
-                options.complete = optionsComplete;
-            }
-            if (optionsProgress != null) {
-                options.progress = optionsProgress;
-            }
-            if (optionsSync != null) {
-                isSync = optionsSync;
-            }
-        } else if (!syntacticSugar) {
-            // Expand any direct options if possible.
-            var offset = 0;
-            options.duration = validateDuration(args[argumentIndex], true);
-            if (options.duration === undefined) {
-                options.duration = defaults$$1.duration;
-            } else {
-                hasValidDuration = true;
-                offset++;
-            }
-            if (!isFunction(args[argumentIndex + offset])) {
-                // Despite coming before Complete, we can't pass a fn easing
-                var easing = validateEasing(args[argumentIndex + offset], getValue(options && validateDuration(options.duration), defaults$$1.duration), true);
-                if (easing !== undefined) {
-                    offset++;
-                    options.easing = easing;
-                }
-            }
-            var complete = validateComplete(args[argumentIndex + offset], true);
-            if (complete !== undefined) {
-                options.complete = complete;
-            }
-            options.delay = defaults$$1.delay;
-            options.loop = defaults$$1.loop;
-            options.repeat = options.repeatAgain = defaults$$1.repeat;
-        }
-        if (isReverse && options.queue === false) {
-            throw new Error("VelocityJS: Cannot reverse a queue:false animation.");
-        }
-        if (!hasValidDuration && maybeSequence && maybeSequence.duration) {
-            options.duration = maybeSequence.duration;
-        }
-        // When a set of elements is targeted by a Velocity call, the set is
-        // broken up and each element has the current Velocity call individually
-        // queued onto it. In this way, each element's existing queue is
-        // respected; some elements may already be animating and accordingly
-        // should not have this current Velocity call triggered immediately
-        // unless the sync:true option is used.
-        var rootAnimation = {
-            options: options,
-            elements: elements,
-            _prev: undefined,
-            _next: undefined,
-            _flags: isSync ? 32 /* SYNC */ : 0,
-            percentComplete: 0,
-            ellapsedTime: 0,
-            timeStart: 0
-        };
-        animations = [];
-        for (var index = 0; index < elements.length; index++) {
-            var element = elements[index];
-            var flags = 0;
-            if (isNode(element)) {
-                // TODO: This needs to check for valid animation targets, not just Elements
-                if (isReverse) {
-                    var lastAnimation = Data(element).lastAnimationList[options.queue];
-                    propertiesMap = lastAnimation && lastAnimation.tweens;
-                    if (!propertiesMap) {
-                        console.error("VelocityJS: Attempting to reverse an animation on an element with no previous animation:", element);
-                        continue;
-                    }
-                    flags |= 64 /* REVERSE */ & ~(lastAnimation._flags & 64 /* REVERSE */); // tslint:disable-line:no-bitwise
-                }
-                var animation = Object.assign({}, rootAnimation, { element: element, _flags: rootAnimation._flags | flags });
-                options._total++;
-                animations.push(animation);
-                if (options.stagger) {
-                    if (isFunction(options.stagger)) {
-                        var num = optionCallback(options.stagger, element, index, elements.length, elements, "stagger");
-                        if (isNumber(num)) {
-                            animation.delay = options.delay + num;
-                        }
-                    } else {
-                        animation.delay = options.delay + options.stagger * index;
-                    }
-                }
-                if (options.drag) {
-                    animation.duration = options.duration - options.duration * Math.max(1 - (index + 1) / elements.length, 0.75);
-                }
-                if (maybeSequence) {
-                    expandSequence(animation, maybeSequence);
-                } else if (isReverse) {
-                    // In this case we're using the previous animation, so
-                    // it will be expanded correctly when that one runs.
-                    animation.tweens = propertiesMap;
-                } else {
-                    animation.tweens = Object.create(null);
-                    expandProperties(animation, propertiesMap);
-                }
-                queue$1(element, animation, options.queue);
-            }
-        }
-        if (State.isTicking === false) {
-            // If the animation tick isn't running, start it. (Velocity shuts it
-            // off when there are no active calls to process.)
-            tick(false);
-        }
-        if (animations) {
-            defineProperty$1(elements.velocity, "animations", animations);
-        }
-    }
-    /***************
-     Chaining
-     ***************/
-    /* Return the elements back to the call chain, with wrapped elements taking precedence in case Velocity was called via the $.fn. extension. */
-    return elements || promise;
-}
-/**
- * Call an option callback in a try/catch block and report an error if needed.
- */
-function optionCallback(fn, element, index, length, elements, option) {
-    try {
-        return fn.call(element, index, length, elements, option);
-    } catch (e) {
-        console.error("VelocityJS: Exception when calling '" + option + "' callback:", e);
-    }
-}
-
-// Project
-/**
- * Used to patch any object to allow Velocity chaining. In order to chain an
- * object must either be treatable as an array - with a <code>.length</code>
- * property, and each member a Node, or a Node directly.
- *
- * By default Velocity will try to patch <code>window</code>,
- * <code>jQuery</code>, <code>Zepto</code>, and several classes that return
- * Nodes or lists of Nodes.
- */
-function patch(proto, global) {
-    try {
-        defineProperty$1(proto, (global ? "V" : "v") + "elocity", Velocity$1);
-    } catch (e) {
-        console.warn("VelocityJS: Error when trying to add prototype.", e);
-    }
-}
-
-// Project
-var Velocity$2 = Velocity$1;
-/**
- * These parts of Velocity absolutely must be included, even if they're unused!
- */
-var VelocityStatic$1;
-(function (VelocityStatic) {
-    /**
-     * Actions cannot be replaced if they are internal (hasOwnProperty is false
-     * but they still exist). Otherwise they can be replaced by users.
-     *
-     * All external method calls should be using actions rather than sub-calls
-     * of Velocity itself.
-     */
-    VelocityStatic.Actions = Actions;
-    /**
-     * Our known easing functions.
-     */
-    VelocityStatic.Easings = Easings;
-    /**
-     * The currently registered sequences.
-     */
-    VelocityStatic.Sequences = SequencesObject;
-    /**
-     * Current internal state of Velocity.
-     */
-    VelocityStatic.State = State; // tslint:disable-line:no-shadowed-variable
-    /**
-     * Velocity option defaults, which can be overriden by the user.
-     */
-    VelocityStatic.defaults = defaults$1;
-    /**
-     * Used to patch any object to allow Velocity chaining. In order to chain an
-     * object must either be treatable as an array - with a <code>.length</code>
-     * property, and each member a Node, or a Node directly.
-     *
-     * By default Velocity will try to patch <code>window</code>,
-     * <code>jQuery</code>, <code>Zepto</code>, and several classes that return
-     * Nodes or lists of Nodes.
-     */
-    VelocityStatic.patch = patch;
-    /**
-     * Set to true, 1 or 2 (most verbose) to output debug info to console.
-     */
-    VelocityStatic.debug = false;
-    /**
-     * In mock mode, all animations are forced to complete immediately upon the
-     * next rAF tick. If there are further animations queued then they will each
-     * take one single frame in turn. Loops and repeats will be disabled while
-     * <code>mock = true</code>.
-     */
-    VelocityStatic.mock = false;
-    /**
-     * Save our version number somewhere visible.
-     */
-    VelocityStatic.version = VERSION;
-    /**
-     * Added as a fallback for "import {Velocity} from 'velocity-animate';".
-     */
-    VelocityStatic.Velocity = Velocity$1; // tslint:disable-line:no-shadowed-variable
-})(VelocityStatic$1 || (VelocityStatic$1 = {}));
-/* IE detection. Gist: https://gist.github.com/julianshapiro/9098609 */
-var IE$1 = function () {
-    if (document.documentMode) {
-        return document.documentMode;
-    } else {
-        for (var i = 7; i > 4; i--) {
-            var div = document.createElement("div");
-            div.innerHTML = "<!" + "--" + "[if IE " + i + "]><span></span><![endif]-->";
-            if (div.getElementsByTagName("span").length) {
-                div = null;
-                return i;
-            }
-        }
-    }
-    return undefined;
-}();
-/******************
- Unsupported
- ******************/
-if (IE$1 <= 8) {
-    throw new Error("VelocityJS cannot run on Internet Explorer 8 or earlier");
-}
-/******************
- Frameworks
- ******************/
-if (window) {
-    /*
-     * Both jQuery and Zepto allow their $.fn object to be extended to allow
-     * wrapped elements to be subjected to plugin calls. If either framework is
-     * loaded, register a "velocity" extension pointing to Velocity's core
-     * animate() method. Velocity also registers itself onto a global container
-     * (window.jQuery || window.Zepto || window) so that certain features are
-     * accessible beyond just a per-element scope. Accordingly, Velocity can
-     * both act on wrapped DOM elements and stand alone for targeting raw DOM
-     * elements.
-     */
-    var jQuery$1 = window.jQuery,
-        Zepto$1 = window.Zepto;
-    patch(window, true);
-    patch(Element && Element.prototype);
-    patch(NodeList && NodeList.prototype);
-    patch(HTMLCollection && HTMLCollection.prototype);
-    patch(jQuery$1, true);
-    patch(jQuery$1 && jQuery$1.fn);
-    patch(Zepto$1, true);
-    patch(Zepto$1 && Zepto$1.fn);
-}
-// Make sure that the values within Velocity are read-only and upatchable.
-
-var _loop$1 = function _loop(property) {
-    if (VelocityStatic$1.hasOwnProperty(property)) {
-        switch (typeof property === "undefined" ? "undefined" : _typeof(property)) {
-            case "number":
-            case "boolean":
-                defineProperty$1(Velocity$2, property, {
-                    get: function get$$1() {
-                        return VelocityStatic$1[property];
-                    },
-                    set: function set$$1(value) {
-                        VelocityStatic$1[property] = value;
-                    }
-                }, true);
-                break;
-            default:
-                defineProperty$1(Velocity$2, property, VelocityStatic$1[property], true);
-                break;
-        }
-    }
-};
-
-for (var property$1 in VelocityStatic$1) {
-    _loop$1(property$1);
-}
-Object.freeze(Velocity$2);
-
-export default Velocity$2;
+export default Velocity$1;
 //# sourceMappingURL=velocity.es5.js.map
